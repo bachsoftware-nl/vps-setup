@@ -33,7 +33,31 @@ else
     chsh -s /usr/bin/fish "$DEPLOY_USER"
 fi
 
-# ── 3. Node.js 18 (LTS) ────────────────────────────────────────────────────────
+# ── 3. Docker Engine ────────────────────────────────────────────────────────────
+if ! command -v docker &>/dev/null; then
+    info "Docker Engine installeren..."
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        | tee /etc/apt/sources.list.d/docker.list >/dev/null
+    apt-get update -qq
+    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    systemctl enable --now docker
+    success "Docker $(docker --version | cut -d' ' -f3 | tr -d ',') geinstalleerd"
+else
+    success "Docker $(docker --version | cut -d' ' -f3 | tr -d ',') al aanwezig"
+fi
+
+# Voeg deploy user toe aan docker groep
+if ! groups "$DEPLOY_USER" | grep -q docker; then
+    usermod -aG docker "$DEPLOY_USER"
+    info "Gebruiker '$DEPLOY_USER' toegevoegd aan docker groep"
+fi
+
+# ── 4. Node.js 18 (LTS) ────────────────────────────────────────────────────────
 if ! command -v node &>/dev/null; then
     info "Node.js 18 installeren..."
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash - >/dev/null 2>&1
@@ -43,12 +67,12 @@ else
     success "Node.js $(node --version) al aanwezig"
 fi
 
-# ── 4. Claude Code ─────────────────────────────────────────────────────────────
+# ── 5. Claude Code ─────────────────────────────────────────────────────────────
 info "Claude Code installeren..."
 npm install -g @anthropic-ai/claude-code --quiet
 success "Claude Code geinstalleerd"
 
-# ── 5. Starship prompt ─────────────────────────────────────────────────────────
+# ── 6. Starship prompt ─────────────────────────────────────────────────────────
 if ! command -v starship &>/dev/null; then
     info "Starship installeren..."
     curl -fsSL https://starship.rs/install.sh | sh -s -- --yes >/dev/null 2>&1
@@ -57,19 +81,19 @@ else
     success "Starship al aanwezig"
 fi
 
-# ── 6. Fish config directories ──────────────────────────────────────────────────
+# ── 7. Fish config directories ──────────────────────────────────────────────────
 FISH_DIR="$DEPLOY_HOME/.config/fish"
 FUNC_DIR="$FISH_DIR/functions"
 CONF_DIR="$FISH_DIR/conf.d"
 mkdir -p "$FUNC_DIR" "$CONF_DIR"
 
-# ── 7. Fish config.fish ─────────────────────────────────────────────────────────
+# ── 8. Fish config.fish ─────────────────────────────────────────────────────────
 info "Fish config.fish schrijven..."
 cat > "$FISH_DIR/config.fish" << 'FISH_CONFIG'
 starship init fish | source
 FISH_CONFIG
 
-# ── 8. Fish conf.d/welcome.fish ─────────────────────────────────────────────────
+# ── 9. Fish conf.d/welcome.fish ─────────────────────────────────────────────────
 info "Fish welkomstscherm schrijven..."
 cat > "$CONF_DIR/welcome.fish" << 'WELCOME_FISH'
 if status is-login
@@ -195,8 +219,8 @@ if status is-login
     echo "  ─────────────────────────────────────────────────────────────────"
     set_color normal
 
-    set cmd_icons "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟"
-    set cmd_names "cc" "ai" "tc" "tk" "tl" "t" "server-update" "kill-zombies"
+    set cmd_icons "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🚀" "🔌"
+    set cmd_names "cc" "ai" "tc" "tk" "tl" "t" "server-update" "kill-zombies" "new-project" "traefik-status"
     set cmd_descs \
         "Open/koppel een tmux sessie + claude code" \
         "Bekijk draaiende Claude instanties" \
@@ -205,7 +229,9 @@ if status is-login
         "Bekijk alle tmux sessies (met agent-iconen ✦)" \
         "Spring naar een sessie op naam of nummer [tab!]" \
         "Update alle Ubuntu-pakketten" \
-        "Jaag zombie-processen naar het hiernamaals"
+        "Jaag zombie-processen naar het hiernamaals" \
+        "Nieuw project aanmaken met Traefik docker-compose" \
+        "Toon Traefik status en actieve containers"
 
     for i in (seq (count $cmd_names))
         set name $cmd_names[$i]
@@ -235,7 +261,7 @@ if status is-login
 end
 WELCOME_FISH
 
-# ── 9. Fish functies ────────────────────────────────────────────────────────────
+# ── 10. Fish functies ────────────────────────────────────────────────────────────
 info "Fish functies schrijven..."
 
 cat > "$FUNC_DIR/cc.fish" << 'FUNC'
@@ -512,10 +538,142 @@ function motd --description "Toon de Message of the Day"
 end
 FUNC
 
+cat > "$FUNC_DIR/new-project.fish" << 'FUNC'
+function new-project --description "Maak een nieuw project aan met Traefik docker-compose"
+    if test (count $argv) -lt 1
+        echo "Gebruik: new-project <naam> [poort]"
+        echo "  naam   projectnaam (wordt subdomain: naam.jouwdomein.nl)"
+        echo "  poort  interne containerpoort (standaard: 3000)"
+        return 1
+    end
+
+    set project_name $argv[1]
+    set port 3000
+    if test (count $argv) -ge 2
+        set port $argv[2]
+    end
+
+    set domain_file $HOME/traefik/.domain
+    if test -f $domain_file
+        set base_domain (cat $domain_file | string trim)
+    else
+        read -P "Basis domein (bijv. jouwdomein.nl): " base_domain
+    end
+
+    set project_dir $HOME/projects/$project_name
+    if test -d $project_dir
+        set_color brred
+        echo "Map $project_dir bestaat al."
+        set_color normal
+        return 1
+    end
+
+    mkdir -p $project_dir
+    cat > $project_dir/docker-compose.yml << COMPOSE
+services:
+  $project_name:
+    image: your-image:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.$project_name.rule=Host(\`$project_name.$base_domain\`)"
+      - "traefik.http.routers.$project_name.entrypoints=websecure"
+      - "traefik.http.routers.$project_name.tls.certresolver=letsencrypt"
+      - "traefik.http.services.$project_name.loadbalancer.server.port=$port"
+
+networks:
+  proxy:
+    external: true
+COMPOSE
+
+    cat > $project_dir/.env << ENV
+# $project_name omgevingsvariabelen
+ENV
+
+    echo ""
+    set_color brgreen --bold
+    echo "  Project '$project_name' aangemaakt!"
+    set_color normal
+    echo ""
+    set_color brblue
+    echo "  Map:    $project_dir"
+    echo "  URL:    https://$project_name.$base_domain"
+    echo "  Poort:  $port (intern)"
+    set_color normal
+    echo ""
+    echo "  Volgende stappen:"
+    echo "  1. Pas docker-compose.yml aan (image of build sectie)"
+    echo "  2. cd $project_dir"
+    echo "  3. docker compose up -d"
+    echo ""
+end
+FUNC
+
+cat > "$FUNC_DIR/traefik-status.fish" << 'FUNC'
+function traefik-status --description "Toon Traefik status en actieve routers"
+    echo ""
+    set_color brblue --bold
+    echo "  Traefik status"
+    set_color brblack
+    echo "  ─────────────────────────────────────────────"
+    set_color normal
+
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^traefik$'
+        set_color brgreen
+        echo "  Traefik draait"
+        set_color normal
+    else
+        set_color brred
+        echo "  Traefik draait NIET"
+        set_color normal
+        echo ""
+        return 1
+    end
+
+    set domain_file $HOME/traefik/.domain
+    if test -f $domain_file
+        set base_domain (cat $domain_file | string trim)
+        set_color brblack
+        echo "  Domein: $base_domain"
+        set_color normal
+    end
+
+    echo ""
+    set_color brblue --bold
+    echo "  Containers op proxy netwerk"
+    set_color brblack
+    echo "  ─────────────────────────────────────────────"
+    set_color normal
+
+    set containers (docker network inspect proxy --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | string split ' ' | string trim | grep -v '^$')
+    if test (count $containers) -eq 0
+        set_color brblack
+        echo "  Geen containers gevonden op proxy netwerk."
+        set_color normal
+    else
+        for c in $containers
+            set status (docker inspect $c --format '{{.State.Status}}' 2>/dev/null)
+            if test "$status" = "running"
+                set_color brgreen; printf "  ● "; set_color normal
+            else
+                set_color brred; printf "  ○ "; set_color normal
+            end
+            echo $c
+        end
+    end
+    echo ""
+end
+FUNC
+
 cat > "$FUNC_DIR/_cmd_picker.fish" << 'FUNC'
 function _cmd_picker --description "Interactieve command-kiezer (Alt+K)"
-    set -l icons    "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟"
-    set -l names    cc ai tc tk tl t server-update kill-zombies
+    set -l icons    "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🚀" "🔌"
+    set -l names    cc ai tc tk tl t server-update kill-zombies new-project traefik-status
     set -l descs \
         "Open/koppel een tmux sessie + claude code" \
         "Bekijk draaiende Claude instanties" \
@@ -524,7 +682,9 @@ function _cmd_picker --description "Interactieve command-kiezer (Alt+K)"
         "Bekijk alle tmux sessies (met agent-iconen ✦)" \
         "Spring naar een sessie op naam of nummer [tab!]" \
         "Update alle Ubuntu-pakketten" \
-        "Jaag zombie-processen naar het hiernamaals"
+        "Jaag zombie-processen naar het hiernamaals" \
+        "Nieuw project aanmaken met Traefik docker-compose" \
+        "Toon Traefik status en actieve containers"
 
     set -l lines
     for i in (seq (count $names))
@@ -559,7 +719,7 @@ function fish_user_key_bindings
 end
 FUNC
 
-# ── 10. MOTD scripts ────────────────────────────────────────────────────────────
+# ── 11. MOTD scripts ────────────────────────────────────────────────────────────
 info "MOTD scripts schrijven..."
 
 cat > /etc/update-motd.d/55-ssh-connections << 'MOTD'
@@ -598,7 +758,165 @@ MOTD
 chmod +x /etc/update-motd.d/55-ssh-connections
 chmod +x /etc/update-motd.d/60-ai-instances
 
-# ── 11. Eigenaarschap corrigeren ─────────────────────────────────────────────────
+# ── 12. Traefik wizard ──────────────────────────────────────────────────────────
+TRAEFIK_DIR="$DEPLOY_HOME/traefik"
+TRAEFIK_SKIP=false
+
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}  Traefik reverse proxy instellen${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo "  Traefik is de centrale reverse proxy voor al je projecten."
+echo "  Elk nieuw project krijgt automatisch HTTPS via Let's Encrypt."
+echo ""
+read -rp "  Traefik instellen? [J/n] " _traefik_yn
+_traefik_yn="${_traefik_yn:-J}"
+
+if [[ "$_traefik_yn" =~ ^[nN] ]]; then
+    warn "Traefik overgeslagen. Draai later: sudo bash <(curl ...) of stel handmatig in."
+    TRAEFIK_SKIP=true
+fi
+
+if [[ "$TRAEFIK_SKIP" == false ]]; then
+    # Domein ophalen
+    echo ""
+    read -rp "  Jouw domein (bijv. jouwdomein.nl): " TRAEFIK_DOMAIN
+    TRAEFIK_DOMAIN="${TRAEFIK_DOMAIN:-jouwdomein.nl}"
+
+    read -rp "  E-mail voor Let's Encrypt: " LETSENCRYPT_EMAIL
+    LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-admin@${TRAEFIK_DOMAIN}}"
+
+    # Server IP ophalen
+    SERVER_IP=$(curl -fsSL https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
+
+    echo ""
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}  DNS instellen — doe dit nu in je DNS-beheer${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "  Voeg deze DNS-records toe bij jouw domeinbeheerder:"
+    echo ""
+    printf "  %-12s  %-30s  %-5s  %s\n" "Type" "Naam" "TTL" "Waarde"
+    printf "  %-12s  %-30s  %-5s  %s\n" "────────────" "──────────────────────────────" "─────" "───────────────"
+    printf "  %-12s  %-30s  %-5s  %s\n" "A" "${TRAEFIK_DOMAIN}" "300" "${SERVER_IP}"
+    printf "  %-12s  %-30s  %-5s  %s\n" "A (wildcard)" "*.${TRAEFIK_DOMAIN}" "300" "${SERVER_IP}"
+    echo ""
+    echo "  Het wildcard record (*.${TRAEFIK_DOMAIN}) zorgt dat elk"
+    echo "  nieuw project direct bereikbaar is via project.${TRAEFIK_DOMAIN}"
+    echo "  zonder extra DNS-wijzigingen."
+    echo ""
+    echo "  Traefik dashboard: https://traefik.${TRAEFIK_DOMAIN}"
+    echo ""
+    read -rp "  DNS ingesteld en klaar om verder te gaan? [J/n] " _dns_yn
+    _dns_yn="${_dns_yn:-J}"
+
+    if [[ "$_dns_yn" =~ ^[nN] ]]; then
+        warn "Traefik configuratie aangemaakt maar niet gestart."
+        warn "Start later met: cd ~/traefik && docker compose up -d"
+        TRAEFIK_START=false
+    else
+        TRAEFIK_START=true
+    fi
+
+    # Docker proxy netwerk aanmaken
+    if ! docker network ls --format '{{.Name}}' | grep -q '^proxy$'; then
+        docker network create proxy
+        success "Docker netwerk 'proxy' aangemaakt"
+    else
+        success "Docker netwerk 'proxy' al aanwezig"
+    fi
+
+    # Traefik directory en bestanden aanmaken
+    mkdir -p "$TRAEFIK_DIR/dynamic"
+    touch "$TRAEFIK_DIR/acme.json"
+    chmod 600 "$TRAEFIK_DIR/acme.json"
+
+    # Traefik dashboard wachtwoord genereren (basic auth)
+    TRAEFIK_PASS=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)
+    TRAEFIK_HASH=$(docker run --rm httpd:2.4-alpine htpasswd -nbB admin "$TRAEFIK_PASS" 2>/dev/null \
+        | sed 's/\$/\$\$/g' || echo "admin:$$apr1$$changeme$$")
+
+    # docker-compose.yml schrijven
+    cat > "$TRAEFIK_DIR/docker-compose.yml" << TRAEFIK_COMPOSE
+services:
+  traefik:
+    image: traefik:v3.2
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - TRAEFIK_CERTIFICATESRESOLVERS_letsencrypt_ACME_EMAIL=${LETSENCRYPT_EMAIL}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./acme.json:/acme.json
+      - ./dynamic:/etc/traefik/dynamic:ro
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=proxy
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.web.http.redirections.entrypoint.permanent=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.storage=/acme.json
+      - --api.dashboard=true
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=Host(\`traefik.${TRAEFIK_DOMAIN}\`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth"
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_HASH}"
+
+networks:
+  proxy:
+    external: true
+TRAEFIK_COMPOSE
+
+    # .env opslaan
+    cat > "$TRAEFIK_DIR/.env" << TRAEFIK_ENV
+TRAEFIK_DOMAIN=${TRAEFIK_DOMAIN}
+LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
+TRAEFIK_ENV
+
+    # Domein opslaan voor fish functies
+    echo "$TRAEFIK_DOMAIN" > "$TRAEFIK_DIR/.domain"
+
+    chown -R "$DEPLOY_USER:$DEPLOY_USER" "$TRAEFIK_DIR"
+
+    success "Traefik configuratie aangemaakt in ~/traefik/"
+
+    # Traefik starten als DNS klaar is
+    if [[ "$TRAEFIK_START" == true ]]; then
+        info "Traefik starten..."
+        docker compose -f "$TRAEFIK_DIR/docker-compose.yml" up -d
+        success "Traefik draait!"
+        echo ""
+        echo -e "  Dashboard: ${CYAN}https://traefik.${TRAEFIK_DOMAIN}${NC}"
+        echo -e "  Gebruiker: ${CYAN}admin${NC}"
+        echo -e "  Wachtwoord: ${YELLOW}${TRAEFIK_PASS}${NC}"
+        echo ""
+        warn "Sla het wachtwoord op! Het wordt niet opnieuw getoond."
+        echo "  (Staat ook in: ~/traefik/.env)"
+        # Wachtwoord opslaan in .env
+        echo "TRAEFIK_DASHBOARD_PASSWORD=${TRAEFIK_PASS}" >> "$TRAEFIK_DIR/.env"
+    fi
+fi
+
+# ── 13. Eigenaarschap corrigeren ─────────────────────────────────────────────────
 chown -R "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_HOME/.config"
 
 # ── Klaar ────────────────────────────────────────────────────────────────────────
@@ -611,4 +929,7 @@ echo "  Volgende stappen:"
 echo "  1. Log in als $DEPLOY_USER:       su - $DEPLOY_USER"
 echo "  2. Authenticeer Claude:            claude"
 echo "  3. Start Claude in tmux:           cc mijn-project"
+if [[ "$TRAEFIK_SKIP" == false ]]; then
+echo "  4. Nieuw project starten:          new-project mijnapp"
+fi
 echo ""

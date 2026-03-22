@@ -72,7 +72,17 @@ info "Claude Code installeren..."
 npm install -g @anthropic-ai/claude-code --quiet
 success "Claude Code geinstalleerd"
 
-# ── 6. Starship prompt ─────────────────────────────────────────────────────────
+# ── 6. Playwright (headless browser voor screenshots) ───────────────────────────
+if ! command -v playwright &>/dev/null; then
+    info "Playwright installeren voor headless screenshots..."
+    npm install -g playwright --quiet
+    playwright install --with-deps chromium >/dev/null 2>&1
+    success "Playwright + Chromium geinstalleerd"
+else
+    success "Playwright al aanwezig"
+fi
+
+# ── 7. Starship prompt ─────────────────────────────────────────────────────────
 if ! command -v starship &>/dev/null; then
     info "Starship installeren..."
     curl -fsSL https://starship.rs/install.sh | sh -s -- --yes >/dev/null 2>&1
@@ -81,19 +91,19 @@ else
     success "Starship al aanwezig"
 fi
 
-# ── 7. Fish config directories ──────────────────────────────────────────────────
+# ── 8. Fish config directories ──────────────────────────────────────────────────
 FISH_DIR="$DEPLOY_HOME/.config/fish"
 FUNC_DIR="$FISH_DIR/functions"
 CONF_DIR="$FISH_DIR/conf.d"
 mkdir -p "$FUNC_DIR" "$CONF_DIR"
 
-# ── 8. Fish config.fish ─────────────────────────────────────────────────────────
+# ── 9. Fish config.fish ─────────────────────────────────────────────────────────
 info "Fish config.fish schrijven..."
 cat > "$FISH_DIR/config.fish" << 'FISH_CONFIG'
 starship init fish | source
 FISH_CONFIG
 
-# ── 9. Fish conf.d/welcome.fish ─────────────────────────────────────────────────
+# ── 10. Fish conf.d/welcome.fish ─────────────────────────────────────────────────
 info "Fish welkomstscherm schrijven..."
 cat > "$CONF_DIR/welcome.fish" << 'WELCOME_FISH'
 if status is-login
@@ -219,8 +229,8 @@ if status is-login
     echo "  ─────────────────────────────────────────────────────────────────"
     set_color normal
 
-    set cmd_icons "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🚀" "🔌"
-    set cmd_names "cc" "ai" "tc" "tk" "tl" "t" "server-update" "kill-zombies" "new-project" "traefik-status"
+    set cmd_icons "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🚀" "🔌" "📸"
+    set cmd_names "cc" "ai" "tc" "tk" "tl" "t" "server-update" "kill-zombies" "new-project" "traefik-status" "screenshot"
     set cmd_descs \
         "Open/koppel een tmux sessie + claude code" \
         "Bekijk draaiende Claude instanties" \
@@ -231,7 +241,8 @@ if status is-login
         "Update alle Ubuntu-pakketten" \
         "Jaag zombie-processen naar het hiernamaals" \
         "Nieuw project aanmaken met Traefik docker-compose" \
-        "Toon Traefik status en actieve containers"
+        "Toon Traefik status en actieve containers" \
+        "Headless screenshot van project of URL"
 
     for i in (seq (count $cmd_names))
         set name $cmd_names[$i]
@@ -261,7 +272,7 @@ if status is-login
 end
 WELCOME_FISH
 
-# ── 10. Fish functies ────────────────────────────────────────────────────────────
+# ── 11. Fish functies ────────────────────────────────────────────────────────────
 info "Fish functies schrijven..."
 
 cat > "$FUNC_DIR/cc.fish" << 'FUNC'
@@ -538,6 +549,66 @@ function motd --description "Toon de Message of the Day"
 end
 FUNC
 
+cat > "$FUNC_DIR/screenshot.fish" << 'FUNC'
+function screenshot --description "Maak een headless screenshot van een project of URL"
+    if test (count $argv) -lt 1
+        echo "Gebruik: screenshot <project-of-url> [breedte] [hoogte]"
+        echo "  screenshot mijnapp          → https://mijnapp.jouwdomein.nl"
+        echo "  screenshot https://example.com"
+        echo "  screenshot mijnapp 1920 1080"
+        return 1
+    end
+
+    set input $argv[1]
+    set width 1280
+    set height 800
+    if test (count $argv) -ge 3
+        set width $argv[2]
+        set height $argv[3]
+    end
+
+    if string match -q "http*" $input
+        set url $input
+        set name (echo $input | string replace -ra 'https?://' '' | string replace -ra '[^a-z0-9]' '-' | string lower)
+    else
+        set domain_file $HOME/traefik/.domain
+        if test -f $domain_file
+            set domain (cat $domain_file | string trim)
+        else
+            read -P "Basis domein: " domain
+        end
+        set url "https://$input.$domain"
+        set name $input
+    end
+
+    set outdir $HOME/screenshots
+    mkdir -p $outdir
+    set outfile "$outdir/screenshot-$name-"(date +%s)".png"
+
+    echo "📸 Screenshot van $url..."
+
+    playwright screenshot \
+        --browser chromium \
+        --viewport-size "$width,$height" \
+        --wait-for-timeout 2000 \
+        $url $outfile
+
+    if test $status -eq 0
+        set_color brgreen
+        echo "✓ Opgeslagen: $outfile"
+        set_color normal
+        echo ""
+        echo "Gebruik in Claude Code:"
+        echo "  Read het bestand: $outfile"
+    else
+        set_color brred
+        echo "Screenshot mislukt."
+        set_color normal
+        return 1
+    end
+end
+FUNC
+
 cat > "$FUNC_DIR/new-project.fish" << 'FUNC'
 function new-project --description "Maak een nieuw project aan met Traefik docker-compose"
     if test (count $argv) -lt 1
@@ -672,8 +743,8 @@ FUNC
 
 cat > "$FUNC_DIR/_cmd_picker.fish" << 'FUNC'
 function _cmd_picker --description "Interactieve command-kiezer (Alt+K)"
-    set -l icons    "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🚀" "🔌"
-    set -l names    cc ai tc tk tl t server-update kill-zombies new-project traefik-status
+    set -l icons    "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🚀" "🔌" "📸"
+    set -l names    cc ai tc tk tl t server-update kill-zombies new-project traefik-status screenshot
     set -l descs \
         "Open/koppel een tmux sessie + claude code" \
         "Bekijk draaiende Claude instanties" \
@@ -684,7 +755,8 @@ function _cmd_picker --description "Interactieve command-kiezer (Alt+K)"
         "Update alle Ubuntu-pakketten" \
         "Jaag zombie-processen naar het hiernamaals" \
         "Nieuw project aanmaken met Traefik docker-compose" \
-        "Toon Traefik status en actieve containers"
+        "Toon Traefik status en actieve containers" \
+        "Headless screenshot van project of URL"
 
     set -l lines
     for i in (seq (count $names))
@@ -719,7 +791,7 @@ function fish_user_key_bindings
 end
 FUNC
 
-# ── 11. MOTD scripts ────────────────────────────────────────────────────────────
+# ── 12. MOTD scripts ────────────────────────────────────────────────────────────
 info "MOTD scripts schrijven..."
 
 cat > /etc/update-motd.d/55-ssh-connections << 'MOTD'
@@ -758,7 +830,7 @@ MOTD
 chmod +x /etc/update-motd.d/55-ssh-connections
 chmod +x /etc/update-motd.d/60-ai-instances
 
-# ── 12. Traefik wizard ──────────────────────────────────────────────────────────
+# ── 13. Traefik wizard ──────────────────────────────────────────────────────────
 TRAEFIK_DIR="$DEPLOY_HOME/traefik"
 TRAEFIK_SKIP=false
 
@@ -916,7 +988,7 @@ TRAEFIK_ENV
     fi
 fi
 
-# ── 13. Eigenaarschap corrigeren ─────────────────────────────────────────────────
+# ── 14. Eigenaarschap corrigeren ─────────────────────────────────────────────────
 chown -R "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_HOME/.config"
 
 # ── Klaar ────────────────────────────────────────────────────────────────────────

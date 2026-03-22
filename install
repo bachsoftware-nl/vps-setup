@@ -1,0 +1,614 @@
+#!/usr/bin/env bash
+# ============================================================
+#  VPS Setup Script — bachsoftware.nl
+#  Installeert: fish, starship, fzf, tmux, node, claude code
+#  Gebruik: bash <(curl -fsSL https://bachsoftware.nl/vibecoding)
+# ============================================================
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+info()    { echo -e "${CYAN}[info]${NC}  $*"; }
+success() { echo -e "${GREEN}[ok]${NC}    $*"; }
+warn()    { echo -e "${YELLOW}[warn]${NC}  $*"; }
+die()     { echo -e "${RED}[fout]${NC}  $*" >&2; exit 1; }
+
+[[ $EUID -ne 0 ]] && die "Draai dit script als root (sudo bash <(curl ...))"
+
+DEPLOY_USER="${DEPLOY_USER:-deploy}"
+DEPLOY_HOME="/home/$DEPLOY_USER"
+
+# ── 1. Basis pakketten ──────────────────────────────────────────────────────────
+info "Systeem updaten en basis pakketten installeren..."
+apt-get update -qq
+apt-get install -y -qq fish fzf tmux curl wget git unzip software-properties-common apt-transport-https ca-certificates
+
+# ── 2. Deploy user aanmaken als die niet bestaat ────────────────────────────────
+if ! id "$DEPLOY_USER" &>/dev/null; then
+    info "Gebruiker '$DEPLOY_USER' aanmaken..."
+    useradd -m -s /usr/bin/fish -G users,docker "$DEPLOY_USER" 2>/dev/null || \
+    useradd -m -s /usr/bin/fish -G users "$DEPLOY_USER"
+    success "Gebruiker '$DEPLOY_USER' aangemaakt"
+else
+    info "Gebruiker '$DEPLOY_USER' bestaat al"
+    chsh -s /usr/bin/fish "$DEPLOY_USER"
+fi
+
+# ── 3. Node.js 18 (LTS) ────────────────────────────────────────────────────────
+if ! command -v node &>/dev/null; then
+    info "Node.js 18 installeren..."
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - >/dev/null 2>&1
+    apt-get install -y -qq nodejs
+    success "Node.js $(node --version) geinstalleerd"
+else
+    success "Node.js $(node --version) al aanwezig"
+fi
+
+# ── 4. Claude Code ─────────────────────────────────────────────────────────────
+info "Claude Code installeren..."
+npm install -g @anthropic-ai/claude-code --quiet
+success "Claude Code geinstalleerd"
+
+# ── 5. Starship prompt ─────────────────────────────────────────────────────────
+if ! command -v starship &>/dev/null; then
+    info "Starship installeren..."
+    curl -fsSL https://starship.rs/install.sh | sh -s -- --yes >/dev/null 2>&1
+    success "Starship geinstalleerd"
+else
+    success "Starship al aanwezig"
+fi
+
+# ── 6. Fish config directories ──────────────────────────────────────────────────
+FISH_DIR="$DEPLOY_HOME/.config/fish"
+FUNC_DIR="$FISH_DIR/functions"
+CONF_DIR="$FISH_DIR/conf.d"
+mkdir -p "$FUNC_DIR" "$CONF_DIR"
+
+# ── 7. Fish config.fish ─────────────────────────────────────────────────────────
+info "Fish config.fish schrijven..."
+cat > "$FISH_DIR/config.fish" << 'FISH_CONFIG'
+starship init fish | source
+FISH_CONFIG
+
+# ── 8. Fish conf.d/welcome.fish ─────────────────────────────────────────────────
+info "Fish welkomstscherm schrijven..."
+cat > "$CONF_DIR/welcome.fish" << 'WELCOME_FISH'
+if status is-login
+
+    set greetings \
+        "Goedemorgen, code-held!" \
+        "Hoi hoi! De server leeft nog. Proficiat." \
+        "Welkom terug! De bugs hebben op je gewacht." \
+        "Ah, daar ben je eindelijk! De server ook." \
+        "Goededag! Koffie eerst, dan pas paniek." \
+        "Hallo hallo! Alles nog intact? Nee? Dan ben je hier op het juiste adres." \
+        "Welkom! Server draait nog. Dat is al meer dan verwacht." \
+        "Dag dag! Klaar om dingen te breken in naam der vooruitgang?"
+
+    set gidx (random 1 (count $greetings))
+
+    echo ""
+    set_color brmagenta --bold
+    echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    set_color bryellow --bold
+    echo "  🌷  "$greetings[$gidx]
+    set_color brmagenta --bold
+    echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    set_color normal
+    echo ""
+
+    set load_str (uptime | string replace -r '.+load average: ' '')
+    set mem_total (grep MemTotal /proc/meminfo | string replace -ra '[^0-9]' '')
+    set mem_avail (grep MemAvailable /proc/meminfo | string replace -ra '[^0-9]' '')
+    set mem_pct (math "floor(($mem_total - $mem_avail) / $mem_total * 100 + 0.5)")
+    set disk_used (df -h / | awk 'NR==2 {print $3}')
+    set disk_total (df -h / | awk 'NR==2 {print $2}')
+    set disk_pct (df -h / | awk 'NR==2 {print $5}')
+    set uptime_str (uptime -p | string replace 'up ' '')
+
+    set_color brblue --bold
+    echo "  📊  Server Status"
+    set_color brblack
+    echo "  ─────────────────────────────────────────────"
+    set_color normal
+
+    set_color yellow; printf "  ⏰  Uptime       "; set_color white; echo $uptime_str
+    set_color yellow; printf "  💻  CPU load     "; set_color white; echo $load_str
+    set_color yellow; printf "  🧠  Geheugen     "; set_color white; echo $mem_pct"% gebruikt"
+    set_color yellow; printf "  💾  Schijf       "; set_color white; echo $disk_used" / "$disk_total" ("$disk_pct")"
+
+    set_color brblack
+    echo "  ─────────────────────────────────────────────"
+    set_color normal
+    echo ""
+
+    set quotes \
+        "Doe maar gewoon, dan doe je al gek genoeg.|Nederlandse volkswijsheid" \
+        "Na regen komt zonneschijn. En dan weer regen.|Nederlandse meteorologie" \
+        "Als het leven je citroenen geeft, maak dan jenever.|Anonieme Nederlander" \
+        "Een bug per dag houdt de baan voor vandaag.|Anonieme developer" \
+        "Goede code schrijft zichzelf. Slechte code ook, maar dan krijg jij de schuld.|Wet van Murphy" \
+        "De beste debugger is een goede nachtrust. Of koffie. Of beide.|Softwarewijsheid" \
+        "Waarom iets vandaag doen als je het ook morgen kunt procrastineren?|Nationale sport" \
+        "Koffie: want kamillethee heeft nog nooit een server gered.|Cafeinelogica" \
+        "Bugs zijn gewoon features die nog op hun moment wachten.|Optimistische developer" \
+        "Als je denkt dat het af is, heb je de tests nog niet gedraaid.|Wet van de eeuwige hoop" \
+        "Code is als poëzie: niemand begrijpt het, maar iedereen doet alsof.|Literaire observatie" \
+        "Documentatie schrijven is als sporten: iedereen weet dat het goed voor je is, maar niemand doet het.|Universele waarheid" \
+        "Altijd de blame pushen naar de vorige developer. Zelfs als je het zelf was.|Git-wijsheid" \
+        "Werkt het? Niet aanraken. Werkt het niet? Dan ook niet, want dan wordt het erger.|Sysadmin-protocol" \
+        "Het leven is te kort voor slechte koffie en lange buildtijden.|Prioriteitenlijst" \
+        "Alle wegen leiden naar Rome, maar alle bugs leiden naar productie.|Wet van de verkeerde timing" \
+        "Heb je al geprobeerd hem uit en weer aan te zetten? Nee? Dan weet ik het ook niet.|Helpdesk-klassiek" \
+        "Als je code werkt op jouw machine, ship dan jouw machine.|Docker-uitvinding" \
+        "Semicolons zijn optioneel, tenzij ze dat niet zijn. Succes.|JavaScript-wijsheid" \
+        "In de fout gaan doe je niet, je ontdekt een onverwacht gedrag.|PR-taalgebruik" \
+        "Stack Overflow: waar code begint en begrip eindigt.|Eerlijke documentatie" \
+        "De cloud is gewoon iemand anders zijn computer. En die persoon is ook maar een mens.|Nuchtere observatie" \
+        "Als je niet weet wat je doet, doe het dan zelfverzekerd. Dat heet seniority.|Carrièreadvies" \
+        "Slaap is voor mensen zonder cron jobs.|DevOps-filosofie" \
+        "Een tevreden klant is iemand die zijn eigen ticket nog niet heeft geopend.|Support-realisme" \
+        "Versioning: nummers verhogen terwijl je hoopt dat niemand de changelog leest.|Semver-realisme" \
+        "Een lege inbox is een mythe, net als een bug-vrije codebase en gratis bitterballen.|Drieluik van de onmogelijkheden" \
+        "Morgen is er ook een dag. En die begint ook met een standup.|Kantoorrealiteit" \
+        "Perfectie is de vijand van goed genoeg, maar goed genoeg is ook de vijand van je reputatie.|Developer-dilemma" \
+        "De enige werkende computer is de computer die je nog niet hebt aangezet.|Quantum-sysadmin-theorie"
+
+    set counter_file /tmp/.motd_quote_index
+
+    if test -f $counter_file
+        set idx (cat $counter_file)
+        if not string match -qr '^\d+$' -- $idx
+            set idx 1
+        end
+        if test $idx -gt (count $quotes)
+            set idx 1
+        end
+    else
+        set idx 1
+    end
+
+    set next_idx (math $idx + 1)
+    if test $next_idx -gt (count $quotes)
+        set next_idx 1
+    end
+    echo $next_idx > $counter_file
+
+    set parts (string split "|" $quotes[$idx])
+    set quote_text $parts[1]
+    set quote_author $parts[2]
+
+    set colors brred brgreen bryellow brblue brmagenta brcyan
+    set num_colors (count $colors)
+    set color_idx (math "($idx % $num_colors) + 1")
+    set chosen_color $colors[$color_idx]
+
+    set_color $chosen_color --bold
+    echo "  💬  \"$quote_text\""
+    set_color white
+    echo "       — $quote_author"
+    set_color normal
+    echo ""
+
+    set_color brblue --bold
+    echo "  🔧  Handige Commando's"
+    set_color brblack
+    echo "  ─────────────────────────────────────────────────────────────────"
+    set_color normal
+
+    set cmd_icons "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟"
+    set cmd_names "cc" "ai" "tc" "tk" "tl" "t" "server-update" "kill-zombies"
+    set cmd_descs \
+        "Open/koppel een tmux sessie + claude code" \
+        "Bekijk draaiende Claude instanties" \
+        "Maak een nieuwe tmux sessie" \
+        "Slachtoffer van de dag: kill een tmux sessie" \
+        "Bekijk alle tmux sessies (met agent-iconen ✦)" \
+        "Spring naar een sessie op naam of nummer [tab!]" \
+        "Update alle Ubuntu-pakketten" \
+        "Jaag zombie-processen naar het hiernamaals"
+
+    for i in (seq (count $cmd_names))
+        set name $cmd_names[$i]
+        set link_uri "file://$HOME/.config/fish/functions/$name.fish"
+        set pad_len (math "16 - "(string length $name))
+        set padding (string repeat -n $pad_len " ")
+
+        set_color brgreen
+        printf "  %s  " $cmd_icons[$i]
+        set_color brcyan --bold
+        printf '\033]8;;%s\033\\%s\033]8;;\033\\%s' $link_uri $name $padding
+        set_color normal
+        echo $cmd_descs[$i]
+    end
+
+    set_color brblack
+    echo "  ─────────────────────────────────────────────────────────────────"
+    set_color brblack
+    printf "  "
+    set_color bryellow --bold
+    printf "Alt+K"
+    set_color brblack
+    echo "  ▸ command kiezen en direct invoegen in de terminal"
+    set_color normal
+    echo ""
+
+end
+WELCOME_FISH
+
+# ── 9. Fish functies ────────────────────────────────────────────────────────────
+info "Fish functies schrijven..."
+
+cat > "$FUNC_DIR/cc.fish" << 'FUNC'
+function cc --description "Open a named tmux session and launch claude code"
+    if set -q TMUX
+        claude --dangerously-skip-permissions
+        return
+    end
+    if test (count $argv) -lt 1
+        read -P "Session name: " session_name
+        if test -z "$session_name"
+            echo "cc: no session name provided"
+            return 1
+        end
+    else
+        set session_name $argv[1]
+    end
+    if tmux has-session -t $session_name 2>/dev/null
+        tmux attach-session -t $session_name
+    else
+        tmux new-session -s $session_name -d
+        tmux send-keys -t $session_name "claude --dangerously-skip-permissions" Enter
+        tmux attach-session -t $session_name
+    end
+end
+FUNC
+
+cat > "$FUNC_DIR/ccb.fish" << 'FUNC'
+function ccb --description "Start a claude code tmux session with an initial prompt"
+    set prompt (string join " " $argv)
+    if set -q TMUX
+        if test -n "$prompt"
+            claude --dangerously-skip-permissions $prompt
+        else
+            claude --dangerously-skip-permissions
+        end
+        return
+    end
+    if test -n "$prompt"
+        set session_name (claude --dangerously-skip-permissions -p "Output only a short kebab-case tmux session name (2-4 words) for this task: $prompt" 2>/dev/null | string trim | string replace -ra '[^a-zA-Z0-9-]' '' | string lower)
+    end
+    if test -z "$session_name"
+        set session_name "claude"
+    end
+    if tmux has-session -t $session_name 2>/dev/null
+        set session_name "$session_name-"(date +%s | string sub -s -4)
+    end
+    if test -n "$prompt"
+        set tmpfile (mktemp /tmp/ccb_XXXXXX.fish)
+        printf 'claude --dangerously-skip-permissions %s\n' (string escape $prompt) >$tmpfile
+        tmux new-session -d -s $session_name "fish $tmpfile; rm -f $tmpfile"
+    else
+        tmux new-session -d -s $session_name "claude --dangerously-skip-permissions"
+    end
+    tmux attach-session -t $session_name
+end
+FUNC
+
+cat > "$FUNC_DIR/ai.fish" << 'FUNC'
+function ai --description "Toon draaiende Claude instanties"
+    echo ""
+    set_color brblue --bold
+    echo "  🤖  AI-instanties"
+    set_color brblack
+    echo "  ──────────────────────────────────────────────────────────────────"
+    set_color normal
+
+    set -l cc_rows (ps -eo pid,lstart,tty,cmd --no-headers | awk '$NF == "claude" || $8 == "claude" {
+        pid = $1
+        started = $2 " " $3 " " $4 " " $5 " " $6
+        tty_disp = ($7 == "?") ? "-" : "/dev/" $7
+        printf "cc|%s|%s|%s\n", pid, started, tty_disp
+    }')
+
+    if test (count $cc_rows) -eq 0
+        set_color brblack
+        echo "  Geen actieve Claude instanties gevonden."
+        set_color normal
+        echo ""
+        return 0
+    end
+
+    set_color brblack
+    printf "    %-8s %-24s %-12s %s\n" "PID" "Gestart om" "Terminal" "Kill commando"
+    printf "    %-8s %-24s %-12s %s\n" "--------" "------------------------" "------------" "-------------"
+    set_color normal
+
+    for row in $cc_rows
+        set -l parts (string split '|' $row)
+        set -l pid $parts[2]
+        set -l started $parts[3]
+        set -l tty $parts[4]
+        printf " 🟠 "
+        set_color brwhite --bold
+        printf "%-8s " $pid
+        set_color cyan
+        printf "%-24s " $started
+        set_color brblack
+        printf "%-12s " $tty
+        set_color bryellow
+        printf "kill "
+        set_color brred --bold
+        printf "%s" $pid
+        set_color normal
+        echo ""
+    end
+
+    set_color brblack
+    echo "  ──────────────────────────────────────────────────────────────────"
+    set_color normal
+    echo ""
+end
+FUNC
+
+cat > "$FUNC_DIR/tc.fish" << 'FUNC'
+function tc --description "Maak een nieuwe tmux sessie"
+    if set -q TMUX
+        echo "tc: cannot run inside a tmux session"
+        return 1
+    end
+    if test (count $argv) -eq 0
+        tmux new-session
+    else
+        tmux new-session -s $argv[1]
+    end
+end
+FUNC
+
+cat > "$FUNC_DIR/tk.fish" << 'FUNC'
+function tk --description "Kill een tmux sessie op naam of nummer"
+    if test (count $argv) -eq 0
+        echo "Usage: tk <session-name-or-number>"
+        return 1
+    end
+    if tmux kill-session -t $argv[1]
+        echo "Session '$argv[1]' killed."
+    else
+        echo "Failed to kill session '$argv[1]'." >&2
+        return 1
+    end
+end
+FUNC
+
+cat > "$FUNC_DIR/tl.fish" << 'FUNC'
+function tl --description "Toon alle tmux sessies met agent-iconen"
+    set -l sessions (tmux list-sessions -F '#{session_name}' 2>/dev/null)
+    if test (count $sessions) -eq 0
+        set_color brblack
+        echo "  Geen actieve tmux sessies."
+        set_color normal
+        return 0
+    end
+    echo ""
+    for name in $sessions
+        set -l meta (tmux list-sessions -F '#{session_name} #{session_windows} #{session_attached}' 2>/dev/null | string match -r "^$name .*")
+        set -l parts (string split ' ' $meta)
+        set -l win_count $parts[2]
+        set -l attached $parts[3]
+        set -l cmds (tmux list-panes -s -t $name -F '#{pane_current_command}' 2>/dev/null)
+        set -l icon "▸"
+        set -l agent_color (set_color cyan)
+        for cmd in $cmds
+            switch (string lower $cmd)
+                case '*claude*'
+                    set icon "✦"
+                    set agent_color (set_color E8447A)
+            end
+        end
+        if test "$icon" = "▸"
+            switch (string lower $name)
+                case '*claude*'
+                    set icon "✦"
+                    set agent_color (set_color E8447A)
+            end
+        end
+        set -l win_label "venster"
+        if test "$win_count" != "1"
+            set win_label "vensters"
+        end
+        set -l dot ""
+        if test "$attached" = "1"
+            set dot "  "(set_color brgreen)"●"(set_color normal)
+        end
+        printf "  %s%s  %s%-28s%s%s%d %s%s%s\n" \
+            $agent_color $icon \
+            (set_color white --bold) $name (set_color normal) \
+            (set_color brblack) $win_count " $win_label" (set_color normal) \
+            $dot
+    end
+    echo ""
+end
+FUNC
+
+cat > "$FUNC_DIR/t.fish" << 'FUNC'
+function t --description "Koppel aan of schakel naar een tmux sessie"
+    if test (count $argv) -eq 0
+        echo "Usage: t <session-name-or-number>"
+        return 1
+    end
+    if set -q TMUX
+        tmux switch-client -t $argv[1]
+    else
+        tmux attach-session -t $argv[1]
+    end
+end
+FUNC
+
+cat > "$FUNC_DIR/server-update.fish" << 'FUNC'
+function server-update --description "Update alle Ubuntu pakketten"
+    sudo apt update && sudo apt upgrade -y
+end
+FUNC
+
+cat > "$FUNC_DIR/kill-zombies.fish" << 'FUNC'
+function kill-zombies --description "Kill parent processes van zombie processen"
+    set zombie_info (ps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/ {print $1, $2, $4}')
+    if test -z "$zombie_info"
+        echo "No zombie processes found."
+        return 0
+    end
+    set zombie_pids (ps -eo pid,stat | awk '$2 ~ /^Z/ {print $1}')
+    set parent_pids (ps -eo pid,ppid,stat | awk '$3 ~ /^Z/ {print $2}' | sort -u)
+    set_color brred
+    echo "Found "(count $zombie_pids)" zombie process(es):"
+    set_color normal
+    ps -eo pid,ppid,stat,comm | awk 'NR==1 || $3 ~ /^Z/'
+    echo ""
+    set_color bryellow
+    echo "Signaling parent process(es) to reap zombies..."
+    set_color normal
+    for ppid in $parent_pids
+        if test "$ppid" = "1"
+            echo "  PID 1 (init/systemd) is parent — zombie will be reaped automatically."
+            continue
+        end
+        set pname (ps -p $ppid -o comm= 2>/dev/null; or echo "unknown")
+        if kill -SIGCHLD $ppid 2>/dev/null
+            set_color green
+            echo "  Sent SIGCHLD to parent PID $ppid ($pname)"
+            set_color normal
+        else
+            set_color brred
+            echo "  Could not signal PID $ppid ($pname) — try running with sudo"
+            set_color normal
+        end
+    end
+    sleep 0.5
+    set remaining (ps -eo stat | awk '$1 ~ /^Z/' | wc -l | string trim)
+    if test "$remaining" = "0"
+        set_color brgreen
+        echo ""
+        echo "All zombies reaped."
+        set_color normal
+    else
+        set_color bryellow
+        echo ""
+        echo "$remaining zombie(s) still remain. Their parents may need to be killed directly:"
+        set_color normal
+        set stubborn_parents (ps -eo pid,ppid,stat | awk '$3 ~ /^Z/ {print $2}' | sort -u)
+        for ppid in $stubborn_parents
+            if test "$ppid" = "1"
+                continue
+            end
+            set pname (ps -p $ppid -o comm= 2>/dev/null; or echo "unknown")
+            echo "  kill $ppid  # $pname"
+        end
+    end
+end
+FUNC
+
+cat > "$FUNC_DIR/motd.fish" << 'FUNC'
+function motd --description "Toon de Message of the Day"
+    run-parts /etc/update-motd.d/
+end
+FUNC
+
+cat > "$FUNC_DIR/_cmd_picker.fish" << 'FUNC'
+function _cmd_picker --description "Interactieve command-kiezer (Alt+K)"
+    set -l icons    "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟"
+    set -l names    cc ai tc tk tl t server-update kill-zombies
+    set -l descs \
+        "Open/koppel een tmux sessie + claude code" \
+        "Bekijk draaiende Claude instanties" \
+        "Maak een nieuwe tmux sessie" \
+        "Slachtoffer van de dag: kill een tmux sessie" \
+        "Bekijk alle tmux sessies (met agent-iconen ✦)" \
+        "Spring naar een sessie op naam of nummer [tab!]" \
+        "Update alle Ubuntu-pakketten" \
+        "Jaag zombie-processen naar het hiernamaals"
+
+    set -l lines
+    for i in (seq (count $names))
+        set -a lines (printf '%s  %-16s  %s' $icons[$i] $names[$i] $descs[$i])
+    end
+
+    set -l selected (printf '%s\n' $lines \
+        | fzf \
+            --height=~50% \
+            --reverse \
+            --no-info \
+            --prompt='  ▸ ' \
+            --header='  Command kiezen — Enter voegt in, Esc annuleert' \
+            --color='header:italic:bright-black,prompt:bright-cyan,pointer:bright-cyan')
+
+    if test -z "$selected"
+        commandline -f repaint
+        return
+    end
+
+    set -l cmd (echo $selected | string replace -r '^.\S*\s+(\S+).*' '$1')
+    if test -n "$cmd"
+        commandline -r $cmd
+    end
+    commandline -f repaint
+end
+FUNC
+
+cat > "$FUNC_DIR/fish_user_key_bindings.fish" << 'FUNC'
+function fish_user_key_bindings
+    bind \ek _cmd_picker
+end
+FUNC
+
+# ── 10. MOTD scripts ────────────────────────────────────────────────────────────
+info "MOTD scripts schrijven..."
+
+cat > /etc/update-motd.d/55-ssh-connections << 'MOTD'
+#!/bin/sh
+CONNECTIONS=$(who | awk '$5 ~ /^\(/ && $5 !~ /tmux|screen/ {print}')
+if [ -n "$CONNECTIONS" ]; then
+    printf "\n SSH-verbindingen:\n"
+    printf "    %-12s %-8s %-20s %s\n" "Gebruiker" "Terminal" "Tijdstip" "IP-adres"
+    printf "    %-12s %-8s %-20s %s\n" "------------" "--------" "--------------------" "--------"
+    who | awk '$5 ~ /^\(/ && $5 !~ /tmux|screen/ {
+        user = $1; tty = $2; dt = $3 " " $4; ip = $5
+        gsub(/[()]/, "", ip)
+        printf "    %-12s %-8s %-20s %s\n", user, tty, dt, ip
+    }'
+    printf "\n"
+fi
+MOTD
+
+cat > /etc/update-motd.d/60-ai-instances << 'MOTD'
+#!/bin/sh
+CC=$(ps -eo pid,lstart,tty,cmd --no-headers | awk '$8 == "claude"')
+if [ -n "$CC" ]; then
+    printf "\n AI-instanties:\n"
+    printf "    %-8s %-24s %-12s %s\n" "PID" "Gestart om" "Terminal" "Kill commando"
+    printf "    %-8s %-24s %-12s %s\n" "--------" "------------------------" "------------" "-------------"
+    ps -eo pid,lstart,tty,cmd --no-headers | awk '$8 == "claude" {
+        pid = $1
+        started = $2 " " $3 " " $4 " " $5 " " $6
+        tty_disp = ($7 == "?") ? "-" : "/dev/" $7
+        printf " 🟠 %-8s %-24s %-12s kill %s\n", pid, started, tty_disp, pid
+    }'
+    printf "\n"
+fi
+MOTD
+
+chmod +x /etc/update-motd.d/55-ssh-connections
+chmod +x /etc/update-motd.d/60-ai-instances
+
+# ── 11. Eigenaarschap corrigeren ─────────────────────────────────────────────────
+chown -R "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_HOME/.config"
+
+# ── Klaar ────────────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}  Setup klaar!${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo "  Volgende stappen:"
+echo "  1. Log in als $DEPLOY_USER:       su - $DEPLOY_USER"
+echo "  2. Authenticeer Claude:            claude"
+echo "  3. Start Claude in tmux:           cc mijn-project"
+echo ""

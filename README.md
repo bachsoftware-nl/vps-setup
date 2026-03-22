@@ -109,6 +109,14 @@ Wil je een andere gebruikersnaam dan `deploy`? Dat kan:
 sudo DEPLOY_USER=bart bash <(curl -fsSL https://bachsoftware.nl/vibecoding)
 ```
 
+## Aanbevolen VPS
+
+Voor een tientje per maand heb je een prima VPS waar dit allemaal op past. Wij draaien op een **Strato VPS** — goedkoop, stabiel, datacenters in Duitsland.
+
+👉 **[Strato VPS — vanaf ~€10/maand](https://www.strato.nl/server/vps/)**
+
+Kies de kleinste Linux VPS met Ubuntu 22.04 of 24.04. Dat is genoeg voor Traefik + meerdere projecten + Claude Code.
+
 ## Vereisten
 
 - Ubuntu (getest op 22.04 en 24.04)

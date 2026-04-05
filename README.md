@@ -21,7 +21,8 @@ Ja, het heet `/vibecoding`. Nee, we schamen ons er niet voor.
 | **tmux** | Sessies die overleven als je verbinding wegvalt (en dat gaat gebeuren) |
 | **fzf** | Fuzzy finder, want typen is voor mensen zonder deadlines |
 | **Node.js 18** | Omdat Claude Code er nou eenmaal op draait |
-| **Claude Code** | De enige AI-assistent die ook echt commits schrijft |
+| **Claude Code** | AI-assistent van Anthropic die ook echt commits schrijft |
+| **opencode** | Open-source AI coding agent, werkt met GitHub Copilot en meer |
 | **Docker Engine** | Want containers zijn gewoon betere servers in een doos |
 | **Traefik v3** | Reverse proxy met automatisch HTTPS voor elk project |
 
@@ -45,10 +46,12 @@ Traefik regelt automatisch HTTPS via Let's Encrypt voor elk project dat je aanma
 
 | Commando | Wat het doet |
 |----------|-------------|
-| `cc <naam>` | Start Claude in een tmux sessie |
-| `ccb <prompt>` | Start Claude met een initiële taak, bedenkt zelf een sessienaam |
-| `ai` | Overzicht van alle draaiende Claude instanties |
-| `tl` | Alle tmux sessies, met icoontjes en alles |
+| `oc <naam>` | Start opencode in een tmux sessie |
+| `ocb <prompt>` | Start opencode met een initiële taak, bedenkt zelf een sessienaam |
+| `cc <naam>` | Start Claude Code in een tmux sessie |
+| `ccb <prompt>` | Start Claude Code met een initiële taak, bedenkt zelf een sessienaam |
+| `ai` | Overzicht van alle draaiende AI-instanties (opencode ⚪ + claude 🟠) |
+| `tl` | Alle tmux sessies, met icoontjes per agent (⚡ opencode, ✦ claude) |
 | `tc <naam>` | Nieuwe tmux sessie |
 | `tk <naam>` | Kill een tmux sessie (gebruik met gevoel) |
 | `t <naam>` | Spring naar een sessie |
@@ -80,10 +83,12 @@ Het project is direct bereikbaar op `https://mijnapp.jouwdomein.nl` — Traefik 
 2. Maakt een `deploy` user aan als die er nog niet is (of past de bestaande aan)
 3. Installeert Docker Engine en voegt de deploy user toe aan de docker groep
 4. Zet fish als standaard shell
-5. Schrijft alle functies naar `~/.config/fish/functions/`
-6. Voegt een welkomstscherm toe met server stats en een dagelijkse quote
-7. Updatet de MOTD zodat je bij het inloggen meteen ziet welke Claude sessies er draaien
-8. Loopt de Traefik wizard (optioneel, maar aanbevolen)
+5. Installeert Claude Code via npm
+6. Installeert opencode en schrijft een basis config (`~/.config/opencode/opencode.json`)
+7. Schrijft alle functies naar `~/.config/fish/functions/`
+8. Voegt een welkomstscherm toe met server stats en een dagelijkse quote
+9. Updatet de MOTD zodat je bij het inloggen meteen ziet welke AI-instanties er draaien
+10. Loopt de Traefik wizard (optioneel, maar aanbevolen)
 
 ## Na installatie
 
@@ -94,7 +99,13 @@ su - deploy
 # Authenticeer bij Anthropic (eerste keer)
 claude
 
-# Start je eerste Claude sessie
+# Authenticeer opencode via GitHub Copilot
+opencode  # run /connect → kies GitHub Copilot
+
+# Start een opencode sessie
+oc mijn-project
+
+# Of een Claude sessie
 cc mijn-project
 
 # Of maak direct een nieuw project aan
@@ -115,14 +126,14 @@ Voor een tientje per maand heb je een prima VPS waar dit allemaal op past. Wij d
 
 👉 **[Strato VPS — vanaf ~€10/maand](https://www.strato.nl/server/vps/)**
 
-Kies de kleinste Linux VPS met Ubuntu 22.04 of 24.04. Dat is genoeg voor Traefik + meerdere projecten + Claude Code.
+Kies de kleinste Linux VPS met Ubuntu 22.04 of 24.04. Dat is genoeg voor Traefik + meerdere projecten + Claude Code + opencode.
 
 ## Vereisten
 
 - Ubuntu (getest op 22.04 en 24.04)
 - Root toegang
 - Een domein met beheer over de DNS
-- Een API key van Anthropic
+- Een API key van Anthropic (voor Claude Code) en/of een GitHub Copilot abonnement (voor opencode)
 - Koffie (niet vereist, maar sterk aanbevolen)
 
 ---

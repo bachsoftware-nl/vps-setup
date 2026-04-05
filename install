@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 #  VPS Setup Script — bachsoftware.nl
-#  Installeert: fish, starship, fzf, tmux, node, claude code
+#  Installeert: fish, starship, fzf, tmux, node, claude code, opencode
 #  Gebruik: bash <(curl -fsSL https://bachsoftware.nl/vibecoding)
 # ============================================================
 set -euo pipefail
@@ -72,6 +72,31 @@ info "Claude Code installeren..."
 npm install -g @anthropic-ai/claude-code --quiet
 success "Claude Code geinstalleerd"
 
+# ── 5b. opencode ────────────────────────────────────────────────────────────────
+if command -v opencode &>/dev/null; then
+    success "opencode al aanwezig"
+else
+    info "opencode installeren..."
+    su - "$DEPLOY_USER" -s /bin/bash -c \
+        'curl -fsSL https://opencode.ai/install | sh -s -- --no-modify-path' >/dev/null 2>&1
+    ln -sf "$DEPLOY_HOME/.opencode/bin/opencode" /usr/local/bin/opencode 2>/dev/null || true
+    success "opencode geinstalleerd"
+fi
+
+# opencode config aanmaken als die nog niet bestaat
+mkdir -p "$DEPLOY_HOME/.config/opencode"
+if [[ ! -f "$DEPLOY_HOME/.config/opencode/opencode.json" ]]; then
+    cat > "$DEPLOY_HOME/.config/opencode/opencode.json" << 'OC_CONFIG'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "github-copilot/claude-sonnet-4.6",
+  "small_model": "github-copilot/claude-sonnet-4.6",
+  "plugin": ["opencode-copilot-auth"]
+}
+OC_CONFIG
+    success "opencode config aangemaakt"
+fi
+
 # ── 6. Playwright (headless browser voor screenshots) ───────────────────────────
 if ! command -v playwright &>/dev/null; then
     info "Playwright installeren voor headless screenshots..."
@@ -101,6 +126,8 @@ mkdir -p "$FUNC_DIR" "$CONF_DIR"
 info "Fish config.fish schrijven..."
 cat > "$FISH_DIR/config.fish" << 'FISH_CONFIG'
 starship init fish | source
+fish_add_path ~/.local/bin
+fish_add_path ~/.opencode/bin
 FISH_CONFIG
 
 # ── 10. Fish conf.d/welcome.fish ─────────────────────────────────────────────────
@@ -229,14 +256,15 @@ if status is-login
     echo "  ─────────────────────────────────────────────────────────────────"
     set_color normal
 
-    set cmd_icons "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🚀" "🔌" "📸"
-    set cmd_names "cc" "ai" "tc" "tk" "tl" "t" "server-update" "kill-zombies" "new-project" "traefik-status" "screenshot"
+    set cmd_icons "🚀" "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🆕" "🔌" "📸"
+    set cmd_names "oc" "cc" "ai" "tc" "tk" "tl" "t" "server-update" "kill-zombies" "new-project" "traefik-status" "screenshot"
     set cmd_descs \
+        "Open/koppel een tmux sessie + opencode" \
         "Open/koppel een tmux sessie + claude code" \
-        "Bekijk draaiende Claude instanties" \
+        "Bekijk draaiende AI-instanties (opencode + claude)" \
         "Maak een nieuwe tmux sessie" \
         "Slachtoffer van de dag: kill een tmux sessie" \
-        "Bekijk alle tmux sessies (met agent-iconen ✦)" \
+        "Bekijk alle tmux sessies (met agent-iconen ⚡✦)" \
         "Spring naar een sessie op naam of nummer [tab!]" \
         "Update alle Ubuntu-pakketten" \
         "Jaag zombie-processen naar het hiernamaals" \
@@ -331,14 +359,90 @@ function ccb --description "Start a claude code tmux session with an initial pro
 end
 FUNC
 
+cat > "$FUNC_DIR/oc.fish" << 'FUNC'
+function oc --description "Open a named tmux session and launch opencode"
+    if set -q TMUX
+        echo "oc: cannot run inside a tmux session"
+        return 1
+    end
+
+    if test (count $argv) -lt 1
+        read -P "Session name: " session_name
+        if test -z "$session_name"
+            echo "oc: no session name provided"
+            return 1
+        end
+    else
+        set session_name $argv[1]
+    end
+
+    if tmux has-session -t $session_name 2>/dev/null
+        tmux attach-session -t $session_name
+    else
+        tmux new-session -s $session_name -d
+        tmux send-keys -t $session_name "opencode" Enter
+        tmux attach-session -t $session_name
+    end
+end
+FUNC
+
+cat > "$FUNC_DIR/ocb.fish" << 'FUNC'
+function ocb --description "Start an opencode tmux session with optional prompt"
+    set prompt (string join " " $argv)
+
+    # If already inside tmux, just run opencode directly
+    if test -n "$TMUX"
+        if test -n "$prompt"
+            opencode --prompt $prompt
+        else
+            opencode
+        end
+        return
+    end
+
+    # Generate a session name via opencode if prompt provided
+    if test -n "$prompt"
+        set session_name (opencode run "Output only a short kebab-case tmux session name (2-4 words) for this task: $prompt" 2>/dev/null | string trim | string replace -ra '[^a-zA-Z0-9-]' '' | string lower)
+    end
+
+    # Fallback name
+    if test -z "$session_name"
+        set session_name "opencode"
+    end
+
+    # Ensure unique session name
+    if tmux has-session -t $session_name 2>/dev/null
+        set session_name "$session_name-"(date +%s | string sub -s -4)
+    end
+
+    # Write prompt to a temp fish script to avoid quoting issues
+    if test -n "$prompt"
+        set tmpfile (mktemp /tmp/ocb_XXXXXX.fish)
+        printf 'opencode --prompt %s\n' (string escape $prompt) >$tmpfile
+        tmux new-session -d -s $session_name "fish $tmpfile; rm -f $tmpfile"
+    else
+        tmux new-session -d -s $session_name "opencode"
+    end
+
+    tmux attach-session -t $session_name
+end
+FUNC
+
 cat > "$FUNC_DIR/ai.fish" << 'FUNC'
-function ai --description "Toon draaiende Claude instanties"
+function ai --description "Toon draaiende OpenCode en Claude Code instanties"
     echo ""
     set_color brblue --bold
     echo "  🤖  AI-instanties"
     set_color brblack
     echo "  ──────────────────────────────────────────────────────────────────"
     set_color normal
+
+    set -l oc_rows (ps -eo pid,lstart,tty,cmd --no-headers | awk '$NF == "opencode" || $8 == "opencode" {
+        pid = $1
+        started = $2 " " $3 " " $4 " " $5 " " $6
+        tty_disp = ($7 == "?") ? "-" : "/dev/" $7
+        printf "oc|%s|%s|%s\n", pid, started, tty_disp
+    }')
 
     set -l cc_rows (ps -eo pid,lstart,tty,cmd --no-headers | awk '$NF == "claude" || $8 == "claude" {
         pid = $1
@@ -347,9 +451,11 @@ function ai --description "Toon draaiende Claude instanties"
         printf "cc|%s|%s|%s\n", pid, started, tty_disp
     }')
 
-    if test (count $cc_rows) -eq 0
+    set -l all_rows $oc_rows $cc_rows
+
+    if test (count $all_rows) -eq 0
         set_color brblack
-        echo "  Geen actieve Claude instanties gevonden."
+        echo "  Geen actieve AI-instanties gevonden."
         set_color normal
         echo ""
         return 0
@@ -360,12 +466,20 @@ function ai --description "Toon draaiende Claude instanties"
     printf "    %-8s %-24s %-12s %s\n" "--------" "------------------------" "------------" "-------------"
     set_color normal
 
-    for row in $cc_rows
+    for row in $all_rows
         set -l parts (string split '|' $row)
+        set -l kind $parts[1]
         set -l pid $parts[2]
         set -l started $parts[3]
         set -l tty $parts[4]
-        printf " 🟠 "
+
+        if test "$kind" = "oc"
+            set -l icon "⚪"
+        else
+            set -l icon "🟠"
+        end
+
+        printf " %s " $icon
         set_color brwhite --bold
         printf "%-8s " $pid
         set_color cyan
@@ -417,14 +531,16 @@ end
 FUNC
 
 cat > "$FUNC_DIR/tl.fish" << 'FUNC'
-function tl --description "Toon alle tmux sessies met agent-iconen"
+function tl --description "List all tmux sessions with agent icons and colors"
     set -l sessions (tmux list-sessions -F '#{session_name}' 2>/dev/null)
+
     if test (count $sessions) -eq 0
         set_color brblack
         echo "  Geen actieve tmux sessies."
         set_color normal
         return 0
     end
+
     echo ""
     for name in $sessions
         set -l meta (tmux list-sessions -F '#{session_name} #{session_windows} #{session_attached}' 2>/dev/null | string match -r "^$name .*")
@@ -434,15 +550,24 @@ function tl --description "Toon alle tmux sessies met agent-iconen"
         set -l cmds (tmux list-panes -s -t $name -F '#{pane_current_command}' 2>/dev/null)
         set -l icon "▸"
         set -l agent_color (set_color cyan)
+        set -l agent ""
         for cmd in $cmds
             switch (string lower $cmd)
+                case '*opencode*'
+                    set icon "⚡"
+                    set agent_color (set_color FF8C00)
+                    set agent opencode
                 case '*claude*'
                     set icon "✦"
                     set agent_color (set_color E8447A)
+                    set agent claude
             end
         end
-        if test "$icon" = "▸"
+        if test -z "$agent"
             switch (string lower $name)
+                case '*opencode*'
+                    set icon "⚡"
+                    set agent_color (set_color FF8C00)
                 case '*claude*'
                     set icon "✦"
                     set agent_color (set_color E8447A)
@@ -743,14 +868,15 @@ FUNC
 
 cat > "$FUNC_DIR/_cmd_picker.fish" << 'FUNC'
 function _cmd_picker --description "Interactieve command-kiezer (Alt+K)"
-    set -l icons    "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🚀" "🔌" "📸"
-    set -l names    cc ai tc tk tl t server-update kill-zombies new-project traefik-status screenshot
+    set -l icons    "🚀" "🤖" "👾" "📺" "💀" "📋" "🔀" "🔄" "🧟" "🆕" "🔌" "📸"
+    set -l names    oc cc ai tc tk tl t server-update kill-zombies new-project traefik-status screenshot
     set -l descs \
+        "Open/koppel een tmux sessie + opencode" \
         "Open/koppel een tmux sessie + claude code" \
-        "Bekijk draaiende Claude instanties" \
+        "Bekijk draaiende AI-instanties (opencode + claude)" \
         "Maak een nieuwe tmux sessie" \
         "Slachtoffer van de dag: kill een tmux sessie" \
-        "Bekijk alle tmux sessies (met agent-iconen ✦)" \
+        "Bekijk alle tmux sessies (met agent-iconen ⚡✦)" \
         "Spring naar een sessie op naam of nummer [tab!]" \
         "Update alle Ubuntu-pakketten" \
         "Jaag zombie-processen naar het hiernamaals" \
@@ -812,11 +938,24 @@ MOTD
 
 cat > /etc/update-motd.d/60-ai-instances << 'MOTD'
 #!/bin/sh
-CC=$(ps -eo pid,lstart,tty,cmd --no-headers | awk '$8 == "claude"')
-if [ -n "$CC" ]; then
+#
+#    60-ai-instances - toon draaiende OpenCode en Claude Code instanties
+#
+
+OC=$(ps -eo pid,lstart,tty,cmd --no-headers | awk '$NF == "opencode"')
+CC=$(ps -eo pid,lstart,tty,cmd --no-headers | awk '$NF == "claude"')
+
+if [ -n "$OC" ] || [ -n "$CC" ]; then
     printf "\n AI-instanties:\n"
     printf "    %-8s %-24s %-12s %s\n" "PID" "Gestart om" "Terminal" "Kill commando"
     printf "    %-8s %-24s %-12s %s\n" "--------" "------------------------" "------------" "-------------"
+
+    ps -eo pid,lstart,tty,cmd --no-headers | awk '$8 == "opencode" {
+        pid = $1
+        started = $2 " " $3 " " $4 " " $5 " " $6
+        tty_disp = ($7 == "?") ? "-" : "/dev/" $7
+        printf " ⚪ %-8s %-24s %-12s kill %s\n", pid, started, tty_disp, pid
+    }'
     ps -eo pid,lstart,tty,cmd --no-headers | awk '$8 == "claude" {
         pid = $1
         started = $2 " " $3 " " $4 " " $5 " " $6
@@ -990,6 +1129,7 @@ fi
 
 # ── 14. Eigenaarschap corrigeren ─────────────────────────────────────────────────
 chown -R "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_HOME/.config"
+[[ -d "$DEPLOY_HOME/.opencode" ]] && chown -R "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_HOME/.opencode"
 
 # ── Klaar ────────────────────────────────────────────────────────────────────────
 echo ""
@@ -1000,7 +1140,9 @@ echo ""
 echo "  Volgende stappen:"
 echo "  1. Log in als $DEPLOY_USER:       su - $DEPLOY_USER"
 echo "  2. Authenticeer Claude:            claude"
-echo "  3. Start Claude in tmux:           cc mijn-project"
+echo "  3. Authenticeer opencode:          opencode (run /connect → GitHub Copilot)"
+echo "  4. Start Claude in tmux:           cc mijn-project"
+echo "  5. Start opencode in tmux:         oc mijn-project"
 if [[ "$TRAEFIK_SKIP" == false ]]; then
 echo "  4. Nieuw project starten:          new-project mijnapp"
 fi
